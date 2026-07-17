@@ -138,13 +138,19 @@ wire keys).
 - `_FromKwargs` mixin with `from_kwargs(**flat)` rejecting unknown keys, and
   yam's `_FLOAT_TUPLE_FIELDS` comma-separated tuple parsing for pose/limit
   fields.
-- `FrankaConfig` (frozen): `hostname` (FCI address, required for hardware, no
-  default probing), `control_hz=15.0`, `joint_low/joint_high` (defaults above),
+- `FrankaConfig` (frozen): `hostname: str | None = None` (FCI address; None
+  must construct fine so `registry.resolve` / default-config construction
+  works, with a `ConfigError` at first `reset()` connect when unset, same
+  treatment as the camera devices), `control_hz=15.0` (README warns: DROID
+  checkpoints assume 15 Hz execution, so changing this rescales all executed
+  velocities), `joint_low/joint_high` (defaults above),
   `home_pose` (default ready pose; reset always homes), `rest_pose=None`
   (optional park target on close; None = stay put, Franka holds impedance),
   `relative_dynamics_factor=0.15` (franky speed/accel/jerk scale, conservative
   default), `gripper_max_width=0.08`, `gripper_speed=0.05` (m/s),
-  `gripper_deadband=0.05` (normalized; see gripper command gating below),
+  `gripper_deadband=0.1` (normalized; deliberately not 0.05, which is the
+  DeltaLimitApprover's derived per-step gripper delta; see gripper command
+  gating below),
   `unattended=False`, `exterior_cam_device` / `wrist_cam_device` (V4L2 paths
   or numeric indices for the builtin OpenCV reader; both or neither, else
   `ConfigError` at reset), `cam_height=480`, `cam_width=640`, `docs_extra=""`.
@@ -153,7 +159,9 @@ wire keys).
   (0, 1], deadband in [0, 1).
 - `OpenpiConfig` (frozen): `host="127.0.0.1"`, `port=8000`, `api_key=None`,
   `actions_are_velocity=True` (pi05-DROID convention; False for
-  joint-position fine-tunes), `action_horizon=15` (pi05-DROID chunk length;
+  joint-position fine-tunes), `velocity_action_scale=0.2` (rad per step per
+  velocity unit, the DROID runtime's `max_joint_delta`; README documents
+  "1.0 = 0.2 rad per 15 Hz step"), `action_horizon=15` (pi05-DROID chunk length;
   `pi0_fast_droid` is 10 and position fine-tunes 16, so the README documents
   per-checkpoint values; recorded in `PolicyConfig`), `replan_interval=8`
   (consumed by the framework: `eval()` builds
@@ -199,6 +207,14 @@ wire keys).
     `gripper_deadband`; the command is non-blocking. Tests cover "unchanged
     target sends no gripper command" and "change beyond deadband sends
     exactly one".
+  - Guardrail interaction (documented in README Run section): the CLI's
+    default `DeltaLimitApprover` derives a 0.05-per-step gripper delta from
+    the [0, 1] slot, turning a full open-to-close command into a 20-step ramp
+    that fights the deadband gate. The recommended hardware configuration
+    passes an explicit per-dim `max_delta` vector with 1.0 in the gripper
+    slot (the approver broadcasts per-dim vectors). A test feeds a
+    0.05-per-step ramped gripper sequence and asserts bounded gripper command
+    cadence under the gate.
   - `close()`: idempotent; optional `rest_pose` park via sync move; disconnect
     always attempted, handle cleared even on error.
   - Camera seam: yam-style injected `camera_reader() ->
@@ -210,10 +226,13 @@ wire keys).
     "pip install opencv-python-headless"}`): the framework's
     `conformance.missing_runtime_requirements` requires a Mapping and
     silently ignores any other type, so a test asserts the helper reports
-    these modules when absent. `DEVICE_SLOTS` for the setup wizard (hostname
-    + two camera slots), `bind_task()` storing the bound horizon for the
-    operator status line, `EmbodimentInfo.docs` markdown (`_DOCS` +
-    `docs_extra`) naming all 8 dim labels.
+    these modules when absent. `DEVICE_SLOTS` = the two camera slots only
+    (`kind="v4l2"`, `group="cameras"`): the framework's `device_slots()`
+    silently drops kinds outside `("v4l2", "can", "serial")`, so the FCI
+    hostname cannot be a slot and is documented via README/config.ini
+    instead. `bind_task()` storing the bound horizon for the operator status
+    line, `EmbodimentInfo.docs` markdown (`_DOCS` + `docs_extra`) naming all
+    8 dim labels.
 
 ### policy.py
 
@@ -226,13 +245,19 @@ wire keys).
      (1,) as `1 - wire`, `"prompt"` = instruction.
   3. `infer_fn(obs_dict) -> {"actions": (H, 8) float}`; validate shape,
      non-empty, H rows -> **velocity integration when
-     `actions_are_velocity=True`**: row i's arm slots become
-     `q_obs + dt * cumsum(v)[i]` with `dt = 1 / control_hz` (15 Hz shared
-     constant) and `q_obs` the observation's joint_pos arm slots at inference
-     time; the gripper column is a position in both conventions and is never
-     integrated -> flip gripper column (`wire = 1 - droid`) -> truncate to
-     `action_horizon` -> `ActionChunk(control_hz=15.0 from shared config,
-     inference_latency_s measured via injected clock)`. The declared
+     `actions_are_velocity=True`**: DROID "joint velocities" are normalized
+     units, NOT rad/s. The DROID runtime maps one velocity unit to
+     `max_joint_delta = 0.2` rad per 15 Hz step (and clips the chunk to
+     [-1, 1] before execution), so row i's arm slots become
+     `q_obs + velocity_action_scale * cumsum(clip(v, -1, 1))[i]` with
+     `velocity_action_scale=0.2` an `OpenpiConfig` field and `q_obs` the
+     observation's joint_pos arm slots at inference time. There is no
+     dt term. The gripper column is a position in both conventions and is
+     never integrated or clipped -> flip gripper column (`wire = 1 - droid`)
+     -> truncate to `action_horizon` -> `ActionChunk(control_hz=15.0,
+     inference_latency_s measured via injected clock)`.
+     `ActionChunk.control_hz` is metadata (the rollout does not read it),
+     pinned to the DROID 15 Hz convention. The declared
      `control_mode="joint_pos"` stays honest: actions leaving the policy are
      always absolute targets (same honesty pattern as yam's delta-to-absolute
      conversion, applied on the policy side).
@@ -283,8 +308,11 @@ wire keys).
 
 Jobs: `quality` (ruff check, format --check, mypy; py3.11), `test`
 (ubuntu+macos x py3.11/3.12, `uv sync --locked`, pytest --cov at 100%),
-`import-hygiene` (no extras; assert `cv2`, `franky`, `openpi_client`,
-`websockets`, `torch` absent; import the package), `openpi-seam` (unlocked
+`import-hygiene` (yam's `--no-deps` pattern: `uv pip install --no-deps .`
+plus only the locked `inspect-robots`/`numpy` pins, NOT a plain no-extras
+install, since opencv is a base dep and would come along; assert `cv2`,
+`franky`, `openpi_client`, `websockets`, `torch` absent; import the
+package), `openpi-seam` (unlocked
 `uv pip install -e ".[dev]"` plus openpi-client from the Physical
 Intelligence git URL, then import the transport's real symbols), `ci-ok`
 aggregate (`if: always()`, needs all four, jq all-success; the single
@@ -309,10 +337,12 @@ up-to-date, no bypass.
   from the Mapping-typed `RUNTIME_REQUIREMENTS`.
 - `test_policy.py`: obs dict wire keys byte-exact; gripper polarity both
   directions with asymmetric values; velocity integration (cumulative sum
-  against hand-computed values, dt from control_hz, q_obs anchoring, gripper
-  column untouched, `actions_are_velocity=False` passthrough);
-  shape/emptiness validation; truncation to action_horizon; instruction
-  threading; num_inferences; helpful errors on missing cameras/state.
+  against hand-computed values at `velocity_action_scale=0.2`, the [-1, 1]
+  clip applied before scaling, q_obs anchoring, gripper column untouched by
+  both integration and clip, `actions_are_velocity=False` passthrough, a
+  non-default scale value honored); shape/emptiness validation; truncation
+  to action_horizon; instruction threading; num_inferences; helpful errors
+  on missing cameras/state.
 - `test_operator.py`, `test_preflight.py`, `test_franky.py` (loader error
   message contains install command).
 - `test_compat.py`: the zero-errors-zero-warnings property; builtin
