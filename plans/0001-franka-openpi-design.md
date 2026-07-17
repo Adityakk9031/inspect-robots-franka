@@ -30,15 +30,28 @@ templates at ../inspect-robots-so101 and ../inspect-robots-yam.
   never a hard dependency.
 - **Policy: openpi websocket server client**. pi05-DROID is the strongest
   off-the-shelf Franka policy; protocol is msgpack-numpy over websocket
-  (metadata dict on connect; obs dict in, `{"actions": (H, 8)}` out). Transport
-  goes through `openpi-client` (pure Python) as an optional `openpi` extra,
-  lazily imported in the default seam. Implementer must verify `openpi-client`
-  installs from PyPI; if it is git-only, document a git install like yam does
-  for i2rt and keep it out of the extra.
+  (metadata dict on connect; obs dict in, `{"actions": (H, 8)}` out).
+  **Checkpoint action semantics (verified against openpi upstream):** the
+  released `pi05_droid` checkpoint emits **joint velocities** (7) + gripper
+  position (1) in chunks of length 15 (`pi0_fast_droid`: 10); only the
+  `pi05_droid_finetune` RLDS recipe produces joint-position models (horizon
+  16). The embodiment stays position-only and honest; the **policy adapter
+  integrates velocity chunks to absolute position targets** (see policy.py
+  contract) under `OpenpiConfig.actions_are_velocity=True` (the pi05-DROID
+  default). Position fine-tunes set it to False.
+- **openpi-client is git-only.** The `openpi-client` name on PyPI is a
+  third-party upload (v0.1.2, publisher unaffiliated with Physical
+  Intelligence, pins numpy<2) and must NOT be depended on: supply-chain risk.
+  No `openpi` extra. Follow yam's `_i2rt.py` git-only pattern:
+  `OPENPI_CLIENT_INSTALL_COMMAND = 'pip install "openpi-client @
+  git+https://github.com/Physical-Intelligence/openpi.git#subdirectory=packages/openpi-client"'`
+  surfaced in the guided-install error, the README, and the `openpi-seam` CI
+  job (which installs from that git URL).
 - **Out of scope for v1**: Cartesian EEF mode (yam's kinematics.py machinery),
-  joint-velocity checkpoints (pi0-FAST-DROID emits velocities; we target the
-  pi05 joint-position convention), RealSense reader extra, franky-sim CI
-  integration, GR00T backend, bimanual anything.
+  `joints_are_delta` delta-target support (no delta-emitting policy ships in
+  this repo; velocity checkpoints are covered by policy-side integration),
+  RealSense reader extra, franky-sim CI integration, GR00T backend, bimanual
+  anything.
 
 ## The 8-D contract
 
@@ -60,12 +73,15 @@ components (compat-by-construction, template invariant).
 - Cameras: `exterior_cam`, `wrist_cam` (CameraSpec from config
   `cam_height/width`, default 480x640). Names are plugin-local; the policy maps
   them to DROID wire keys internally.
-- Default joint limits (FR3, radians; config-overridable, and the README tells
-  Panda owners to override):
-  `joint_low  = (-2.7437, -1.7837, -2.9007, -3.0421, -2.8065,  0.5445, -3.0159, 0.0)`
-  `joint_high = ( 2.7437,  1.7837,  2.9007, -0.1518,  2.8065,  4.5169,  3.0159, 1.0)`
-  Implementer verifies these against the current FR3 datasheet values in
-  franky's docs before coding them in.
+- Default joint limits: the FR3 datasheet values pulled 0.05 rad inward on
+  every revolute bound (libfranka fires `joint_position_limits_violation`
+  reflexes on overshoot at the hard limits, so shipping exact datasheet values
+  leaves zero margin). Datasheet (radians):
+  `q_low  = (-2.7437, -1.7837, -2.9007, -3.0421, -2.8065,  0.5445, -3.0159)`
+  `q_high = ( 2.7437,  1.7837,  2.9007, -0.1518,  2.8065,  4.5169,  3.0159)`
+  Shipped defaults = datasheet ∓ 0.05 per revolute slot, gripper slot [0, 1].
+  Config-overridable; the README documents both the datasheet values and the
+  margin, and tells Panda owners to override (Panda limits differ).
 - Default home pose: the Franka "ready" pose
   `(0.0, -0.7854, 0.0, -2.3562, 0.0, 1.5708, 0.7854, 1.0)` (gripper open).
 - `control_hz = 15.0` (DROID convention), embodiment self-paced
@@ -128,21 +144,27 @@ wire keys).
   (optional park target on close; None = stay put, Franka holds impedance),
   `relative_dynamics_factor=0.15` (franky speed/accel/jerk scale, conservative
   default), `gripper_max_width=0.08`, `gripper_speed=0.05` (m/s),
-  `joints_are_delta=False` (delta checkpoints converted to absolute inside
-  `step()`, yam pattern), `unattended=False`, `exterior_cam_device` /
-  `wrist_cam_device` (V4L2 paths or numeric indices for the builtin OpenCV
-  reader; both or neither, else `ConfigError` at reset), `cam_height=480`,
-  `cam_width=640`, `docs_extra=""`.
+  `gripper_deadband=0.05` (normalized; see gripper command gating below),
+  `unattended=False`, `exterior_cam_device` / `wrist_cam_device` (V4L2 paths
+  or numeric indices for the builtin OpenCV reader; both or neither, else
+  `ConfigError` at reset), `cam_height=480`, `cam_width=640`, `docs_extra=""`.
   `__post_init__` validates: control_hz > 0, limits ordered and length 8,
   home/rest pose inside limits, gripper_max_width > 0, dynamics factor in
-  (0, 1].
+  (0, 1], deadband in [0, 1).
 - `OpenpiConfig` (frozen): `host="127.0.0.1"`, `port=8000`, `api_key=None`,
-  `timeout_s=20.0`, `action_horizon=16` (pi05-DROID chunk length; recorded in
-  `PolicyConfig`), `replan_interval=8` (execute half the chunk open-loop, DROID
-  practice; implementer verifies how `PolicyConfig.replan_interval` is consumed
-  by the framework rollout and drops it if unsupported), `name="openpi"` (eval
-  log label), `resize_px=224` (server-side expected image size; used by the
-  default transport's resize-with-pad).
+  `actions_are_velocity=True` (pi05-DROID convention; False for
+  joint-position fine-tunes), `action_horizon=15` (pi05-DROID chunk length;
+  `pi0_fast_droid` is 10 and position fine-tunes 16, so the README documents
+  per-checkpoint values; recorded in `PolicyConfig`), `replan_interval=8`
+  (consumed by the framework: `eval()` builds
+  `DefaultController(policy.config.replan_interval)`, which plays that many
+  actions per chunk then re-infers; 8 of 15 matches DROID's
+  `open_loop_horizon=8` practice and is a deliberate default where yam leaves
+  it None, because DROID checkpoints are trained for partial-chunk execution),
+  `name="openpi"` (eval log label), `resize_px=224` (image size the default
+  transport resize-with-pads to before sending). No timeout field: the
+  upstream `WebsocketClientPolicy` accepts none and `infer()` blocks on the
+  socket; the README notes this.
 - Shared builders: `ACTION_SEMANTICS` constant, `action_box(cfg)`,
   `observation_space(cfg)`; both components build their `info` from these.
 
@@ -165,21 +187,33 @@ wire keys).
     (franky Ruckig-plans the motion, no manual `_ramp_to`), stand-clear prompt
     then `operator.wait_ready()` (skipped when `unattended`), return first
     observation.
-  - `step()`: `validate_dim` -> optional delta->abs -> **hard clamp to
-    joint_low/high (backstop independent of any Approver)** -> `move_joints`
-    (7) + `move_gripper` (denormalized) -> `_pace()` -> observe ->
-    `poll_end()` / `operator.confirm_success()` -> `StepResult`
+  - `step()`: `validate_dim` -> **hard clamp to joint_low/high (backstop
+    independent of any Approver)** -> `move_joints` (7) -> gripper command
+    gating -> `_pace()` -> observe -> `poll_end()` /
+    `operator.confirm_success()` -> `StepResult`
     (`termination_reason="success"` is the only success channel).
+  - Gripper command gating: the Franka Hand is a command-based device (each
+    move takes hundreds of ms; streaming a new command every tick preempts or
+    faults rather than tracks). `step()` sends a gripper command only when the
+    clamped target differs from the last-sent value by more than
+    `gripper_deadband`; the command is non-blocking. Tests cover "unchanged
+    target sends no gripper command" and "change beyond deadband sends
+    exactly one".
   - `close()`: idempotent; optional `rest_pose` park via sync move; disconnect
     always attempted, handle cleared even on error.
   - Camera seam: yam-style injected `camera_reader() ->
     {"exterior_cam": HxWx3 uint8, "wrist_cam": ...}` + builtin OpenCV reader
     from the two `*_cam_device` config values (lazy cv2 import). Neither
     configured -> `ConfigError` at `reset()` before any driver connect.
-  - `RUNTIME_REQUIREMENTS = ("franky", "cv2")`, `DEVICE_SLOTS` for the setup
-    wizard (hostname + two camera slots), `bind_task()` storing the bound
-    horizon for the operator status line, `EmbodimentInfo.docs` markdown
-    (`_DOCS` + `docs_extra`) naming all 8 dim labels.
+  - `RUNTIME_REQUIREMENTS: ClassVar[Mapping[str, str]]` mapping module name
+    to remediation command (`{"franky": FRANKY_INSTALL_COMMAND, "cv2":
+    "pip install opencv-python-headless"}`): the framework's
+    `conformance.missing_runtime_requirements` requires a Mapping and
+    silently ignores any other type, so a test asserts the helper reports
+    these modules when absent. `DEVICE_SLOTS` for the setup wizard (hostname
+    + two camera slots), `bind_task()` storing the bound horizon for the
+    operator status line, `EmbodimentInfo.docs` markdown (`_DOCS` +
+    `docs_extra`) naming all 8 dim labels.
 
 ### policy.py
 
@@ -191,17 +225,27 @@ wire keys).
      `"observation/joint_position"` (7,), `"observation/gripper_position"`
      (1,) as `1 - wire`, `"prompt"` = instruction.
   3. `infer_fn(obs_dict) -> {"actions": (H, 8) float}`; validate shape,
-     non-empty, H rows -> flip gripper column (`wire = 1 - droid`) -> truncate
-     to `action_horizon` -> `ActionChunk(control_hz=15.0 from shared config,
-     inference_latency_s measured via injected clock)`.
+     non-empty, H rows -> **velocity integration when
+     `actions_are_velocity=True`**: row i's arm slots become
+     `q_obs + dt * cumsum(v)[i]` with `dt = 1 / control_hz` (15 Hz shared
+     constant) and `q_obs` the observation's joint_pos arm slots at inference
+     time; the gripper column is a position in both conventions and is never
+     integrated -> flip gripper column (`wire = 1 - droid`) -> truncate to
+     `action_horizon` -> `ActionChunk(control_hz=15.0 from shared config,
+     inference_latency_s measured via injected clock)`. The declared
+     `control_mode="joint_pos"` stays honest: actions leaving the policy are
+     always absolute targets (same honesty pattern as yam's delta-to-absolute
+     conversion, applied on the policy side).
 - `_default_infer` (`# pragma: no cover` transport): lazily imports
   `openpi_client`; `WebsocketClientPolicy(host, port, api_key)`; resize-with-pad
   both images to `resize_px` via `openpi_client.image_tools` before sending
   (custom `infer_fn` owns its own resizing; document this). Guided-install
-  error message when `openpi_client` is missing.
+  error message with `OPENPI_CLIENT_INSTALL_COMMAND` (git URL) when
+  `openpi_client` is missing.
 - `openpi-seam` CI job (so101's `lerobot-seam` analog): installs
-  `.[dev,openpi]` and imports every real symbol `_default_infer` touches, so
-  upstream drift is caught without a GPU or server.
+  openpi-client from the Physical Intelligence git URL (never the PyPI name;
+  see stack decision) and imports every real symbol `_default_infer` touches,
+  so upstream drift is caught without a GPU or server.
 - `info.control_hz = None`; `num_inferences` counter; `reset()` stashes the
   instruction.
 
@@ -221,9 +265,9 @@ wire keys).
 - Base deps: `inspect-robots>=0.12`, `numpy>=1.24`,
   `opencv-python-headless>=4.8` (lazily imported; import-hygiene still enforces
   the package imports without it).
-- Extras: `franka = ["franky-control>=1.1"]`, `openpi = ["openpi-client"]`
-  (subject to the PyPI-availability check above), `dev = [pytest, pytest-cov,
-  ruff, mypy, pre-commit, numpy<2.5]`.
+- Extras: `franka = ["franky-control>=1.1"]`, `dev = [pytest, pytest-cov,
+  ruff, mypy, pre-commit, numpy<2.5]`. No `openpi` extra (git-only client;
+  guided install instead).
 - Entry points: `[project.entry-points."inspect_robots.embodiments"] franka =
   "inspect_robots_franka.embodiment:FrankaEmbodiment"`;
   `[project.entry-points."inspect_robots.policies"] openpi =
@@ -241,8 +285,9 @@ Jobs: `quality` (ruff check, format --check, mypy; py3.11), `test`
 (ubuntu+macos x py3.11/3.12, `uv sync --locked`, pytest --cov at 100%),
 `import-hygiene` (no extras; assert `cv2`, `franky`, `openpi_client`,
 `websockets`, `torch` absent; import the package), `openpi-seam` (unlocked
-`uv pip install -e ".[dev,openpi]"`, import the transport's real symbols),
-`ci-ok` aggregate (`if: always()`, needs all four, jq all-success; the single
+`uv pip install -e ".[dev]"` plus openpi-client from the Physical
+Intelligence git URL, then import the transport's real symbols), `ci-ok`
+aggregate (`if: always()`, needs all four, jq all-success; the single
 required check), `alert-red-main`. `canary.yml` and `release.yml` byte-copied
 from yam. Branch ruleset (already active): PR-only, `ci-ok` required, strict
 up-to-date, no bypass.
@@ -254,20 +299,25 @@ up-to-date, no bypass.
 - `test_config.py`: from_kwargs unknown-key rejection, tuple parsing,
   post-init validation cases, default limits ordered, home inside limits.
 - `test_embodiment.py`: inert init; lazy connect; homing call order; clamp
-  backstop (command outside limits never reaches driver); delta->abs; pacing
-  (injected clock/sleep); gripper denormalization asymmetric-value test;
-  camera reader injection + ConfigError when unset; operator success ->
-  termination_reason="success"; unattended path; close idempotency +
-  disconnect-on-error; bind_task; docs content.
+  backstop (command outside limits never reaches driver); pacing (injected
+  clock/sleep); gripper denormalization asymmetric-value test; gripper
+  command gating (unchanged target sends nothing; beyond-deadband change
+  sends exactly one non-blocking command); camera reader injection +
+  ConfigError when unset; operator success -> termination_reason="success";
+  unattended path; close idempotency + disconnect-on-error; bind_task; docs
+  content; `conformance.missing_runtime_requirements` reports franky/cv2
+  from the Mapping-typed `RUNTIME_REQUIREMENTS`.
 - `test_policy.py`: obs dict wire keys byte-exact; gripper polarity both
-  directions with asymmetric values; shape/emptiness validation; truncation to
-  action_horizon; instruction threading; num_inferences; helpful errors on
-  missing cameras/state.
+  directions with asymmetric values; velocity integration (cumulative sum
+  against hand-computed values, dt from control_hz, q_obs anchoring, gripper
+  column untouched, `actions_are_velocity=False` passthrough);
+  shape/emptiness validation; truncation to action_horizon; instruction
+  threading; num_inferences; helpful errors on missing cameras/state.
 - `test_operator.py`, `test_preflight.py`, `test_franky.py` (loader error
   message contains install command).
 - `test_compat.py`: the zero-errors-zero-warnings property; builtin
   `cubepick-reach` realizable; wrong-dim negative; policy-advertises-control_hz
-  negative; delta pairing mismatch -> control_mode error.
+  negative.
 - `test_embodiment_docs.py`: every DIM_LABEL appears exactly once in docs
   bullets; docs_extra append semantics; no numeric joint-limit leaks.
 - `test_api_snapshot.py`: `__all__` snapshot, entry points resolve via
@@ -282,7 +332,9 @@ machine: package + `[franka]` extra + firmware wheel note + RT-kernel
 requirement; GPU machine: openpi `serve_policy.py` for pi05-DROID), Preflight,
 Run on hardware (config.ini example with camera device paths), Safety (clamp
 backstop, gripper polarity conversion table, first-run verification with
-e-stop, franky RT requirements, delta-vs-absolute warning), Configuration
+e-stop, franky RT requirements, velocity-vs-position checkpoint warning: a
+wrong `actions_are_velocity` setting cannot be detected by compat and must be
+verified with `--dry-run` plus a slow first jog), Configuration
 (field tables for both configs, joint-space unit table), Development,
 Citation, License. CITATION.cff + .env.example included. No em dashes in
 prose, no decorative emoji, headers use colons.
