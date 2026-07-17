@@ -152,8 +152,9 @@ wire keys).
   DeltaLimitApprover's derived per-step gripper delta; see gripper command
   gating below),
   `unattended=False`, `exterior_cam_device` / `wrist_cam_device` (V4L2 paths
-  or numeric indices for the builtin OpenCV reader; both or neither, else
-  `ConfigError` at reset), `cam_height=480`, `cam_width=640`, `docs_extra=""`.
+  or numeric indices for the builtin OpenCV reader; exactly one set is a
+  `ConfigError`; full rule in embodiment.py's camera seam), `cam_height=480`,
+  `cam_width=640`, `docs_extra=""`.
   `__post_init__` validates: control_hz > 0, limits ordered and length 8,
   home/rest pose inside limits, gripper_max_width > 0, dynamics factor in
   (0, 1], deadband in [0, 1).
@@ -400,8 +401,13 @@ verified with `--dry-run` plus a slow first jog), Configuration
 Citation, License. CITATION.cff + .env.example included. No em dashes in
 prose, no decorative emoji, headers use colons.
 
-## Sequencing (current state: issue #1 and PR #2 already open on
-## feat/franka-openpi-plugin; branch ruleset already active)
+## Sequencing
+
+Current state: issue #1 and PR #2 already open on feat/franka-openpi-plugin;
+branch ruleset already active. The `inspect-robots>=0.12` floor was checked
+against feature-introduction tags (runtime-requirements Mapping v0.7.2,
+device slots v0.8.0, DefaultController v0.3.0), so it covers everything the
+plan uses.
 
 1. Plan critique loop until no substantive findings (rounds 1-3 done).
 2. Codex implements from this plan on the existing branch; run `uv lock`
