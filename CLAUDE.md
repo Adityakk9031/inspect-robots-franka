@@ -4,7 +4,7 @@ Inspect Robots adapters for real Franka FR3 and Panda arms driven by Physical
 Intelligence OpenPI DROID policy servers. The framework lives in
 [inspect-robots](https://github.com/robocurve/inspect-robots).
 
-## The one big idea:
+## The one big idea
 
 Inspect Robots swaps a policy and an embodiment. This package ships both:
 
@@ -14,13 +14,13 @@ Inspect Robots swaps a policy and an embodiment. This package ships both:
 Both declare the same 8-D `joint_pos` contract: seven radians plus one normalized
 gripper slot, where 0 is closed and 1 is open.
 
-## Layout:
+## Layout
 
 - `src/inspect_robots_franka/`: package modules and local module map.
 - `tests/`: fully injected hardware-free tests.
 - `plans/0001-franka-openpi-design.md`: accepted binding design.
 
-## Working here:
+## Working here
 
 - Set `UV_CACHE_DIR=$PWD/.uv-cache` for every uv command in this workspace.
 - Install with `uv venv && uv pip install -e ".[dev]"`.
@@ -30,7 +30,7 @@ gripper slot, where 0 is closed and 1 is open.
 - Keep optional hardware and OpenPI imports lazy so the package imports with
   only Inspect Robots and NumPy.
 
-## Safety invariants:
+## Safety invariants
 
 - `FrankaEmbodiment.step()` always clamps to configured limits without relying
   on an approver.
@@ -42,7 +42,7 @@ gripper slot, where 0 is closed and 1 is open.
 - Success reaches scoring only as `termination_reason="success"`.
 - The embodiment declares `SELF_PACED` and sleeps inside `step()`.
 
-## CI and releases:
+## CI and releases
 
 - CI installs from `uv.lock`. Run `uv lock` after dependency changes.
 - `ci-ok` must need every blocking job.
@@ -50,9 +50,9 @@ gripper slot, where 0 is closed and 1 is open.
 - Versions come from git tags through hatch-vcs. Do not add a static project
   version to `pyproject.toml`.
 
-## Writing style:
+## Writing style
 
 - Do not use em dashes in prose. Use periods, commas, colons, or parentheses.
 - Use bold only for definition-list leads and critical safety imperatives.
 - Do not use decorative emoji, slogans, chiasmus, or "not just X, but Y".
-- Headers end with colons.
+- Headers use colons, never em dashes or italics.

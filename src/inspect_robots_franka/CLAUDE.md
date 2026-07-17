@@ -3,7 +3,7 @@
 The package supplies the `franka` embodiment, the `openpi` policy, and the glue
 that keeps their 8-D absolute joint-position contract symmetric.
 
-## Modules:
+## Modules
 
 | Module | Responsibility |
 |--------|----------------|
@@ -16,7 +16,7 @@ that keeps their 8-D absolute joint-position contract symmetric.
 | `preflight.py` | Hardware-free compatibility CLI. |
 | `__init__.py` | Reviewed public API, fenced by `__all__`. |
 
-## Invariants:
+## Invariants
 
 - Construction performs no hardware or network I/O.
 - `step()` clamps every command independently of framework approvers.
