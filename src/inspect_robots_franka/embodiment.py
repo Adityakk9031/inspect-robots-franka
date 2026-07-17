@@ -280,7 +280,12 @@ class FrankaEmbodiment:
         return StepResult(observation=observation, terminated=False)
 
     def close(self) -> None:
-        """Optionally park, then disconnect and clear the handle even on error."""
+        """Optionally park the arm, then disconnect and clear the handle even on error.
+
+        The park is arm-only: a non-blocking gripper command issued here would
+        race the immediate disconnect on real hardware, so the gripper slot of
+        ``rest_pose`` is deliberately ignored.
+        """
         self._bound_max_steps = None
         driver = self._driver
         if driver is None:
@@ -290,7 +295,6 @@ class FrankaEmbodiment:
                 rest = packing.validate_dim(self._cfg.rest_pose)
                 clamped = np.clip(rest, self._cfg.low, self._cfg.high)
                 driver.move_joints_sync(packing.arm_joints(clamped))
-                driver.move_gripper(packing.gripper(clamped) * self._cfg.gripper_max_width)
         finally:
             try:
                 driver.disconnect()

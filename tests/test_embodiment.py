@@ -324,7 +324,7 @@ def test_close_parks_and_is_idempotent() -> None:
     embodiment.close()
     embodiment.close()
     assert driver.sync_joints == [pytest.approx(rest[:7])]
-    assert driver.gripper_commands == pytest.approx([0.02])
+    assert driver.gripper_commands == []  # park is arm-only: no gripper race with disconnect
     assert driver.disconnect_calls == 1
 
 

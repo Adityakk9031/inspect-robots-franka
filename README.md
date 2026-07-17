@@ -255,7 +255,7 @@ shipped high   = datasheet high - 0.05 rad per arm slot
 | `control_hz` | `15.0` | Self-paced command rate |
 | `joint_low`, `joint_high` | inset FR3 limits | Absolute hard-clamp bounds |
 | `home_pose` | Franka ready pose | Mandatory reset target, gripper open |
-| `rest_pose` | `None` | Optional close-time park target |
+| `rest_pose` | `None` | Optional close-time park target; the gripper slot is ignored (arm-only park) |
 | `relative_dynamics_factor` | `0.15` | Franky velocity, acceleration, and jerk scale |
 | `gripper_max_width` | `0.08` | Physical width represented by wire value 1 |
 | `gripper_speed` | `0.05` | Franka Hand speed in m/s |

@@ -109,9 +109,18 @@ jobs:
       - name: Import every symbol used by the real transport
         run: |
           uv run --no-sync python - <<'PY'
+          import inspect
+
           from openpi_client import image_tools, websocket_client_policy
-          assert callable(image_tools.resize_with_pad)
-          assert callable(websocket_client_policy.WebsocketClientPolicy)
+
+          init_params = inspect.signature(
+              websocket_client_policy.WebsocketClientPolicy.__init__
+          ).parameters
+          for name in ("host", "port", "api_key"):
+              assert name in init_params, f"WebsocketClientPolicy lost kwarg {name!r}"
+          assert callable(websocket_client_policy.WebsocketClientPolicy.infer)
+          resize_params = list(inspect.signature(image_tools.resize_with_pad).parameters)
+          assert resize_params[:3] == ["images", "height", "width"], resize_params
           PY
 
   ci-ok:
