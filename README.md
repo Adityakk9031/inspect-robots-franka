@@ -1,5 +1,323 @@
+<div align="center">
+
 # inspect-robots-franka
 
-Inspect Robots adapters for Franka FR3/Panda arms driven by openpi DROID policies.
+Run [Inspect Robots](https://github.com/robocurve/inspect-robots) evals on real
+[Franka FR3](https://franka.de/) and Panda arms with
+[OpenPI](https://github.com/Physical-Intelligence/openpi) DROID policies.
 
-Under construction. The implementation lands via pull request; see the open issues for status.
+![Status: alpha](https://img.shields.io/badge/status-alpha-blue)
+[![CI](https://github.com/robocurve/inspect-robots-franka/actions/workflows/ci.yml/badge.svg)](https://github.com/robocurve/inspect-robots-franka/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/inspect-robots-franka)](https://pypi.org/project/inspect-robots-franka/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/robocurve/inspect-robots-franka/actions/workflows/ci.yml)
+[![Built on Inspect Robots](https://img.shields.io/badge/built%20on-Inspect%20Robots-indigo)](https://github.com/robocurve/inspect-robots)
+
+</div>
+
+> [!NOTE]
+> This project is in early development. Pin a version before depending on its API.
+
+Inspect Robots has two swappable inputs: a `Policy` and an `Embodiment`. This
+package provides both sides of a Franka and OpenPI stack:
+
+- **`openpi` policy:** a websocket client for Physical Intelligence OpenPI
+  servers, with pi05-DROID velocity integration and gripper conversion.
+- **`franka` embodiment:** a lazy franky driver for one FR3 or Panda arm, its
+  Franka Hand, and exterior and wrist cameras.
+
+Both sides declare the same 8-D absolute `joint_pos` contract: seven arm joints
+in radians followed by a normalized gripper, where 0 is closed and 1 is open.
+The compatibility check passes with zero errors and zero warnings. For other
+robot adapters, see
+[inspect-robots-yam](https://github.com/robocurve/inspect-robots-yam) and
+[inspect-robots-so101](https://github.com/robocurve/inspect-robots-so101).
+
+## Install:
+
+### Robot machine:
+
+Create an environment and install the package, camera reader, and franky extra:
+
+```bash
+uv venv && source .venv/bin/activate
+uv pip install "inspect-robots-franka[franka]"
+uv pip install "openpi-client @ git+https://github.com/Physical-Intelligence/openpi.git#subdirectory=packages/openpi-client"
+```
+
+`openpi-client` is intentionally installed from the Physical Intelligence git
+repository. The unrelated `openpi-client` project on PyPI is not used.
+
+Franky wheels bundle a particular libfranka version. The robot firmware decides
+which wheel is compatible. Check the
+[franky installation table](https://timschneider42.github.io/franky/) before
+connecting, and replace the version selected by the extra when the firmware
+requires a different wheel. Enable FCI in the Franka web interface.
+
+Real-time control also needs the Franka host setup: a direct wired connection,
+the recommended PREEMPT_RT kernel, correct network settings, and a workstation
+that satisfies the libfranka real-time checks. Test the setup with libfranka
+examples before running a learned policy.
+
+### GPU machine:
+
+Install OpenPI from its source repository with submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git
+cd openpi
+GIT_LFS_SKIP_SMUDGE=1 uv sync
+GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
+uv run scripts/serve_policy.py --env=DROID
+```
+
+The default DROID server loads `pi05_droid` from
+`gs://openpi-assets/checkpoints/pi05_droid` and listens on port 8000. A specific
+checkpoint can be served explicitly:
+
+```bash
+uv run scripts/serve_policy.py policy:checkpoint \
+  --policy.config=pi05_droid \
+  --policy.dir=gs://openpi-assets/checkpoints/pi05_droid
+```
+
+## Preflight:
+
+Preflight constructs metadata only. It does not connect the robot, cameras, or
+policy server.
+
+```bash
+inspect-robots-franka-preflight
+inspect-robots-franka-preflight --task cubepick-reach
+inspect-robots-franka-preflight --dry-run
+```
+
+A green report verifies action dimension, control mode, rotation representation,
+gripper kind, frame, cameras, state keys, and optional scene realizability. It
+cannot infer whether a checkpoint emits velocity or position actions.
+
+## Run on hardware:
+
+The setup wizard interviews the two declared V4L2 camera slots:
+
+```bash
+inspect-robots setup
+```
+
+The Franka hostname is a network address rather than a discoverable framework
+device slot. Add it with the other defaults in
+`~/.config/inspect-robots/config.ini`:
+
+```ini
+[defaults]
+policy = openpi
+embodiment = franka
+scorer = success_at_end
+max_steps = 450
+store_frames = true
+
+[policy.args]
+host = 192.168.10.20
+port = 8000
+actions_are_velocity = true
+action_horizon = 15
+replan_interval = 8
+
+[embodiment.args]
+hostname = 172.16.0.2
+exterior_cam_device = /dev/v4l/by-id/YOUR-EXTERIOR-CAMERA
+wrist_cam_device = /dev/v4l/by-id/YOUR-WRIST-CAMERA
+```
+
+Stable `/dev/v4l/by-id/...` or custom udev paths are safer than `/dev/videoN`,
+which can change after a replug. With no injected Python camera reader, both
+device fields are required. Setting exactly one raises `ConfigError` at
+`reset()` before franky connects. An injected reader wins and ignores both
+device fields.
+
+Run a task or a direct instruction:
+
+```bash
+inspect-robots run --task cubepick-reach --policy openpi --embodiment franka
+inspect-robots "pick up the red block" --policy openpi --embodiment franka
+```
+
+The attended flow asks the operator to stand clear before homing, then asks for
+scene readiness. Press Enter during execution to end the episode and answer y/N
+to score it. `FrankaConfig(unattended=True)` skips all prompts and operator
+polling. Unattended episodes run until the framework horizon unless another
+component ends them.
+
+The upstream websocket client has no inference timeout. A broken or unreachable
+server can block `infer()`. Run the server and robot supervisor so a network
+stall cannot leave an unsafe scene unattended.
+
+## Safety:
+
+> [!WARNING]
+> Keep an operator at the e-stop for initial runs, after firmware changes, and
+> whenever a new checkpoint or camera arrangement is introduced.
+
+- **Hard clamp:** every `step()` clips all eight values to
+  `FrankaConfig.joint_low/high` inside the embodiment, independent of any
+  `Approver`. The defaults are the FR3 datasheet joint bounds pulled 0.05 rad
+  inward on each side. Panda limits differ. Panda owners must override them.
+- **Velocity semantics:** `pi05_droid` emits normalized joint velocities. The
+  policy clips arm velocities to `[-1, 1]`, cumulatively integrates them from
+  the latest observed joints, and maps one unit to 0.2 rad per 15 Hz step.
+  Position fine-tunes require `actions_are_velocity=false`. Compatibility cannot
+  detect a wrong setting. Use preflight, `--dry-run`, and one slow first jog.
+- **Control rate:** DROID checkpoints assume 15 Hz execution. Changing
+  `FrankaConfig.control_hz` changes the physical velocity represented by every
+  integrated policy step.
+- **Gripper cadence:** the Franka Hand does not accept a new tracking command at
+  every control tick. The embodiment sends a non-blocking move only after the
+  normalized target changes by more than `gripper_deadband`, which defaults to
+  0.1.
+- **Franky requirements:** validate the firmware-specific wheel, FCI state,
+  network, real-time kernel, collision thresholds, brakes, and e-stop before
+  enabling learned motion.
+
+The CLI's default `DeltaLimitApprover` derives a per-step limit of 5 percent of
+each action range. That makes a full gripper stroke a 20-step ramp. The 0.1
+embodiment deadband turns the ramp into a bounded command cadence. The same
+derived defaults can clip legitimate arm motion. Joint 4 has about a 2.79 rad
+configured range, so its default is about 0.14 rad per step, below the policy's
+0.2 rad scale. The CLI accepts only a scalar `--max-action-delta` and has no
+per-dimension approver override.
+
+Python callers can set a per-dimension delta vector. A practical starting point
+allows the DROID arm scale and one complete gripper stroke:
+
+```python
+import numpy as np
+from inspect_robots import eval
+from inspect_robots.approver import ChainApprover, ClampApprover, DeltaLimitApprover
+from inspect_robots_franka import FrankaEmbodiment, OpenpiPolicy
+
+embodiment = FrankaEmbodiment(
+    hostname="172.16.0.2",
+    exterior_cam_device="/dev/v4l/by-id/EXTERIOR",
+    wrist_cam_device="/dev/v4l/by-id/WRIST",
+)
+space = embodiment.info.action_space
+approver = ChainApprover(
+    ClampApprover(space),
+    DeltaLimitApprover(space, max_delta=np.asarray([0.2] * 7 + [1.0])),
+)
+logs = eval("cubepick-reach", OpenpiPolicy(host="192.168.10.20"),
+            embodiment, approver=approver)
+```
+
+### Gripper polarity:
+
+The embodiment never sees DROID units. Conversion stays at the policy boundary:
+
+| Location | 0 means | 1 means | Conversion |
+|----------|---------|---------|------------|
+| Franka package wire and embodiment | closed | open | identity |
+| Franka Hand width | 0 m | `gripper_max_width` | `wire * max_width` |
+| DROID/OpenPI observation and action | open | closed | `wire = 1 - droid` |
+
+For a first run, command asymmetric values such as 0.25 and 0.75 with the arm
+stationary. Confirm the observed width and physical motion before evaluating a
+policy.
+
+## Configuration:
+
+### Joint-space units:
+
+| Slot | Label | Unit and meaning |
+|------|-------|------------------|
+| 0 | `joint1` | absolute radians |
+| 1 | `joint2` | absolute radians |
+| 2 | `joint3` | absolute radians |
+| 3 | `joint4` | absolute radians |
+| 4 | `joint5` | absolute radians |
+| 5 | `joint6` | absolute radians |
+| 6 | `joint7` | absolute radians |
+| 7 | `gripper` | normalized, 0 closed and 1 open |
+
+The shipped FR3 revolute bounds are:
+
+```text
+datasheet low  = (-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159)
+datasheet high = ( 2.7437,  1.7837,  2.9007, -0.1518,  2.8065, 4.5169,  3.0159)
+shipped low    = datasheet low  + 0.05 rad per arm slot
+shipped high   = datasheet high - 0.05 rad per arm slot
+```
+
+### `FrankaConfig` fields:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `hostname` | `None` | FCI address, required at `reset()` |
+| `control_hz` | `15.0` | Self-paced command rate |
+| `joint_low`, `joint_high` | inset FR3 limits | Absolute hard-clamp bounds |
+| `home_pose` | Franka ready pose | Mandatory reset target, gripper open |
+| `rest_pose` | `None` | Optional close-time park target; the gripper slot is ignored (arm-only park) |
+| `relative_dynamics_factor` | `0.15` | Franky velocity, acceleration, and jerk scale |
+| `gripper_max_width` | `0.08` | Physical width represented by wire value 1 |
+| `gripper_speed` | `0.05` | Franka Hand speed in m/s |
+| `gripper_deadband` | `0.1` | Minimum normalized change before a new hand command |
+| `unattended` | `False` | Skip operator readiness and verdict prompts |
+| `exterior_cam_device`, `wrist_cam_device` | `None` | Builtin OpenCV camera devices |
+| `cam_height`, `cam_width` | `480`, `640` | Declared and returned image resolution |
+| `docs_extra` | empty | Rig-specific notes appended to embodiment docs |
+
+### `OpenpiConfig` fields:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `host`, `port` | `127.0.0.1`, `8000` | OpenPI websocket server |
+| `api_key` | `None` | Optional websocket authentication, excluded from eval logs |
+| `actions_are_velocity` | `True` | Integrate DROID arm velocity slots |
+| `velocity_action_scale` | `0.2` | Radians per step for one normalized velocity unit |
+| `action_horizon` | `15` | pi05-DROID chunk length recorded in `PolicyConfig` |
+| `replan_interval` | `8` | Actions consumed before framework re-inference |
+| `name` | `openpi` | Policy label in eval logs |
+| `resize_px` | `224` | Default transport resize-with-pad size |
+
+`pi0_fast_droid` uses an action horizon of 10. Released pi05-DROID uses 15.
+Joint-position fine-tunes commonly use 16 and must also set
+`actions_are_velocity=false`. A custom injected `infer_fn` owns its image
+resizing; `resize_px` applies only to the default websocket transport.
+
+## Development:
+
+Use the local cache path required by this workspace:
+
+```bash
+export UV_CACHE_DIR="$PWD/.uv-cache"
+uv venv
+uv pip install -e ".[dev]"
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run pytest --cov
+```
+
+The suite uses injected drivers, cameras, inference, clocks, and operator I/O.
+It requires no robot, server, camera, or stdin. Coverage is enforced at 100
+percent with branch coverage enabled.
+
+Dependency changes require `uv lock`. CI uses `uv sync --locked`; the weekly
+canary resolves current allowed versions without the lockfile.
+
+## Citation:
+
+```bibtex
+@software{inspect-robots-franka,
+  author  = {Robocurve},
+  title   = {Inspect Robots Franka: OpenPI adapters for Franka arms},
+  year    = {2026},
+  url     = {https://github.com/robocurve/inspect-robots-franka},
+  license = {MIT}
+}
+```
+
+See [`CITATION.cff`](CITATION.cff) for citation metadata.
+
+## License:
+
+[MIT](LICENSE)
