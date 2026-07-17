@@ -1,6 +1,6 @@
 # 0001: Franka embodiment + openpi policy plugin
 
-Status: draft (critique loop in progress)
+Status: accepted after three adversarial critique rounds (2026-07-17)
 Issue: #1
 
 ## Goal
@@ -207,20 +207,32 @@ wire keys).
     `gripper_deadband`; the command is non-blocking. Tests cover "unchanged
     target sends no gripper command" and "change beyond deadband sends
     exactly one".
-  - Guardrail interaction (documented in README Run section): the CLI's
-    default `DeltaLimitApprover` derives a 0.05-per-step gripper delta from
-    the [0, 1] slot, turning a full open-to-close command into a 20-step ramp
-    that fights the deadband gate. The recommended hardware configuration
-    passes an explicit per-dim `max_delta` vector with 1.0 in the gripper
-    slot (the approver broadcasts per-dim vectors). A test feeds a
-    0.05-per-step ramped gripper sequence and asserts bounded gripper command
-    cadence under the gate.
+  - Guardrail interaction (documented in README Safety/Run sections): the
+    CLI's default `DeltaLimitApprover` derives a 0.05-per-step gripper delta
+    from the [0, 1] slot, turning a full open-to-close command into a
+    20-step ramp. The CLI cannot express a per-dim override
+    (`--max-action-delta` is a scalar; there is no approver override flag),
+    so the CLI path runs with the derived defaults and the deadband gate is
+    designed to tolerate the resulting ramp: it emits a bounded command
+    cadence, verified by the ramp-cadence test. Users on the Python API can
+    do better, and the README gives the snippet:
+    `eval(..., approver=ChainApprover(ClampApprover(space),
+    DeltaLimitApprover(space, max_delta=vec)))` with 1.0 in the gripper slot
+    (the approver broadcasts per-dim vectors). The README also notes the
+    derived default on joint4 (5% of its 2.79 rad range, about 0.14
+    rad/step) sits below the 0.2 rad/step velocity scale, so default
+    guardrails can clip large legitimate arm steps; the per-dim vector is
+    the recommended hardware configuration.
   - `close()`: idempotent; optional `rest_pose` park via sync move; disconnect
     always attempted, handle cleared even on error.
   - Camera seam: yam-style injected `camera_reader() ->
     {"exterior_cam": HxWx3 uint8, "wrist_cam": ...}` + builtin OpenCV reader
-    from the two `*_cam_device` config values (lazy cv2 import). Neither
-    configured -> `ConfigError` at `reset()` before any driver connect.
+    from the two `*_cam_device` config values (lazy cv2 import). The full
+    camera rule, stated once: an injected `camera_reader` wins and the
+    device fields are ignored; with no injected reader, both devices set is
+    valid (builtin reader), exactly one set is always a `ConfigError`, and
+    neither set is a `ConfigError` raised at `reset()` before any driver
+    connect.
   - `RUNTIME_REQUIREMENTS: ClassVar[Mapping[str, str]]` mapping module name
     to remediation command (`{"franky": FRANKY_INSTALL_COMMAND, "cv2":
     "pip install opencv-python-headless"}`): the framework's
@@ -237,6 +249,16 @@ wire keys).
 ### policy.py
 
 - `OpenpiPolicy(config=None, *, infer_fn=None, **flat)`; entry point `openpi`.
+- `policy.config` wiring: `self.config = PolicyConfig(
+  action_horizon=cfg.action_horizon, replan_interval=cfg.replan_interval)`.
+  Never expose `OpenpiConfig` itself as `policy.config`: `eval()` serializes
+  `asdict(policy.config)` into every eval log, which would leak `api_key`.
+  (yam's template leaves `replan_interval` at None; copying that silently
+  drops the deliberate 8-of-15 default, so this wiring is explicit.) Tests
+  assert `policy.config.replan_interval == 8` and `"api_key" not in
+  asdict(policy.config)`.
+- `OPENPI_CLIENT_INSTALL_COMMAND` lives in policy.py (the module whose seam
+  needs it), mirroring `FRANKY_INSTALL_COMMAND` in `_franky.py`.
 - `act(observation)`:
   1. Validate presence of both cameras and `joint_pos` state (helpful errors).
   2. Build the DROID obs dict: `"observation/exterior_image_1_left"`,
@@ -273,6 +295,13 @@ wire keys).
   so upstream drift is caught without a GPU or server.
 - `info.control_hz = None`; `num_inferences` counter; `reset()` stashes the
   instruction.
+
+### __init__.py public API (pinned by test_api_snapshot.py)
+
+`__all__` = `FrankaConfig`, `OpenpiConfig`, `FrankaEmbodiment`,
+`OpenpiPolicy`, `OperatorIO`, `STATE_KEY`, `TOTAL_DIM`, `DIM_LABELS`,
+`build`, `run_preflight`, `__version__`. Anything else stays module-private
+or module-qualified; growing this list later is a reviewed API change.
 
 ### operator.py / preflight.py / _franky.py
 
@@ -330,8 +359,10 @@ up-to-date, no bypass.
   backstop (command outside limits never reaches driver); pacing (injected
   clock/sleep); gripper denormalization asymmetric-value test; gripper
   command gating (unchanged target sends nothing; beyond-deadband change
-  sends exactly one non-blocking command); camera reader injection +
-  ConfigError when unset; operator success -> termination_reason="success";
+  sends exactly one non-blocking command; a 0.05-per-step ramped gripper
+  sequence produces bounded command cadence); camera reader injection +
+  ConfigError per the camera rule; operator success ->
+  termination_reason="success";
   unattended path; close idempotency + disconnect-on-error; bind_task; docs
   content; `conformance.missing_runtime_requirements` reports franky/cv2
   from the Mapping-typed `RUNTIME_REQUIREMENTS`.
@@ -369,11 +400,14 @@ verified with `--dry-run` plus a slow first jog), Configuration
 Citation, License. CITATION.cff + .env.example included. No em dashes in
 prose, no decorative emoji, headers use colons.
 
-## Sequencing
+## Sequencing (current state: issue #1 and PR #2 already open on
+## feat/franka-openpi-plugin; branch ruleset already active)
 
-1. Plan critique loop (fresh-context subagent) until no substantive findings.
-2. Codex implements from this plan; Fable reviews the diff.
-3. Push, PR `Closes #1`, CI green.
+1. Plan critique loop until no substantive findings (rounds 1-3 done).
+2. Codex implements from this plan on the existing branch; run `uv lock`
+   before the first CI push (CI is `uv sync --locked` and fails without a
+   committed lockfile); Fable reviews the diff.
+3. Push to the existing branch; PR #2 goes green (do not open a new PR).
 4. Fresh-eyes review loop on the PR diff until clean; merge.
 5. Post-merge: PyPI trusted-publishing pending publisher (owner action),
    first release cut, CLAUDE.md refresh if drift emerged.
