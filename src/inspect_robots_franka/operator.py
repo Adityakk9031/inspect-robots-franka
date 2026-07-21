@@ -36,27 +36,49 @@ class OperatorIO:
         return answer.strip().lower() in _AFFIRMATIVE
 
 
-def _drain_stdin() -> None:
+def _drain_stdin() -> None:  # pragma: no cover - TTY-bound
     """Discard buffered TTY input so a stale newline cannot end step zero."""
     import sys
 
     if not sys.stdin.isatty():
         return
+    if sys.platform == "win32":  # pragma: no cover - TTY-bound
+        import msvcrt
+
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+        return
     import select  # pragma: no cover - TTY-bound
 
-    while select.select([sys.stdin], [], [], 0)[0]:  # pragma: no cover - TTY-bound
-        sys.stdin.readline()  # pragma: no cover - TTY-bound
+    try:
+        while select.select([sys.stdin], [], [], 0)[0]:  # pragma: no cover - TTY-bound
+            sys.stdin.readline()  # pragma: no cover - TTY-bound
+    except OSError:  # pragma: no cover - non-socket stream fallback
+        pass
 
 
 def default_poll_end() -> bool:  # pragma: no cover - requires a real TTY
     """Return whether an operator pressed Enter without blocking."""
-    import select
     import sys
 
     if not sys.stdin.isatty():
         return False
-    ready, _, _ = select.select([sys.stdin], [], [], 0)
-    if not ready:
+    if sys.platform == "win32":  # pragma: no cover - TTY-bound
+        import msvcrt
+
+        if not msvcrt.kbhit():
+            return False
+        ch = msvcrt.getwch()
+        return ch in ("\r", "\n")
+    import select  # pragma: no cover - TTY-bound
+
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        if not ready:
+            return False
+        sys.stdin.readline()
+        return True
+    except OSError:
         return False
-    sys.stdin.readline()
-    return True
+
+
