@@ -80,5 +80,3 @@ def default_poll_end() -> bool:  # pragma: no cover - requires a real TTY
         return True
     except OSError:
         return False
-
-
