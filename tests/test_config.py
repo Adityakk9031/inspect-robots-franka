@@ -78,7 +78,6 @@ def test_from_kwargs_parses_string_coercion_types() -> None:
     assert franka_cfg.unattended is False
     assert franka_cfg.cam_height == 720
 
-
     with pytest.raises(ValueError, match="port must be an integer"):
         OpenpiConfig.from_kwargs(port="invalid")
     with pytest.raises(ValueError, match="control_hz must be a float"):

@@ -107,7 +107,6 @@ class _FromKwargs:
         return cls(**parsed)
 
 
-
 @dataclass(frozen=True)
 class FrankaConfig(_FromKwargs):
     """Static hardware, safety, pacing, and camera configuration."""
