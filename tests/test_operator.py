@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from inspect_robots.errors import EmbodimentFault
 
-from inspect_robots_franka.operator import OperatorIO, default_poll_end
+from inspect_robots_franka.operator import OperatorIO, _drain_stdin, default_poll_end
 
 
 def _scripted(answers: list[str]):
@@ -45,3 +45,17 @@ def test_confirm_success_negative(answer: str) -> None:
 
 def test_default_poll_is_exposed() -> None:
     assert callable(default_poll_end)
+
+
+def test_drain_stdin_non_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    _drain_stdin()
+
+
+def test_default_poll_end_non_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    assert default_poll_end() is False
