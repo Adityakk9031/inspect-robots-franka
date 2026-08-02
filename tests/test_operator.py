@@ -59,3 +59,47 @@ def test_default_poll_end_non_tty(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     assert default_poll_end() is False
+
+
+class DummyMsvcrt:
+    def __init__(self, chars: list[str]) -> None:
+        self.chars = chars
+
+    def kbhit(self) -> bool:
+        return bool(self.chars)
+
+    def getwch(self) -> str:
+        return self.chars.pop(0)
+
+
+def test_drain_stdin_win32(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    dummy = DummyMsvcrt(["a", "\n"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "msvcrt", dummy)
+    _drain_stdin()
+    assert dummy.chars == []
+
+
+def test_default_poll_end_win32_enter(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    dummy = DummyMsvcrt(["a", "\r"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "msvcrt", dummy)
+    assert default_poll_end() is True
+    assert dummy.chars == []
+
+
+def test_default_poll_end_win32_no_enter(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    dummy = DummyMsvcrt(["a", "b"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "msvcrt", dummy)
+    assert default_poll_end() is False
+    assert dummy.chars == []

@@ -42,11 +42,11 @@ def _drain_stdin() -> None:
 
     if not sys.stdin.isatty():
         return
-    if sys.platform == "win32":  # pragma: no cover - TTY-bound
-        import msvcrt  # pragma: no cover - Windows TTY-bound
+    if sys.platform == "win32":
+        import msvcrt  # pragma: no cover - import guard
 
-        while msvcrt.kbhit():  # pragma: no cover - Windows TTY-bound
-            msvcrt.getwch()  # pragma: no cover - Windows TTY-bound
+        while msvcrt.kbhit():
+            msvcrt.getwch()
         return
     import select  # pragma: no cover - POSIX TTY-bound
 
@@ -60,13 +60,14 @@ def default_poll_end() -> bool:
 
     if not sys.stdin.isatty():
         return False
-    if sys.platform == "win32":  # pragma: no cover - TTY-bound
-        import msvcrt  # pragma: no cover - Windows TTY-bound
+    if sys.platform == "win32":
+        import msvcrt  # pragma: no cover - import guard
 
-        if not msvcrt.kbhit():  # pragma: no cover - Windows TTY-bound
-            return False
-        ch = msvcrt.getwch()  # pragma: no cover - Windows TTY-bound
-        return ch in ("\r", "\n")  # pragma: no cover - Windows TTY-bound
+        pressed_enter = False
+        while msvcrt.kbhit():
+            if msvcrt.getwch() in ("\r", "\n"):
+                pressed_enter = True
+        return pressed_enter
     import select  # pragma: no cover - POSIX TTY-bound
 
     ready, _, _ = select.select([sys.stdin], [], [], 0)  # pragma: no cover - POSIX TTY-bound
