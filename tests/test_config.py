@@ -53,6 +53,39 @@ def test_from_kwargs_rejects_unknown_and_parses_pose_fields() -> None:
     assert FrankaConfig.from_kwargs(rest_pose=DEFAULT_HOME_POSE).rest_pose == DEFAULT_HOME_POSE
 
 
+def test_from_kwargs_parses_string_coercion_types() -> None:
+    openpi_cfg = OpenpiConfig.from_kwargs(
+        name="custom_openpi",
+        port="8000",
+        action_horizon="15",
+        actions_are_velocity="true",
+        velocity_action_scale="0.25",
+    )
+    assert openpi_cfg.name == "custom_openpi"
+    assert openpi_cfg.port == 8000
+    assert openpi_cfg.action_horizon == 15
+    assert openpi_cfg.actions_are_velocity is True
+    assert openpi_cfg.velocity_action_scale == 0.25
+
+    franka_cfg = FrankaConfig.from_kwargs(
+        hostname="172.16.0.2",
+        control_hz="20.0",
+        unattended="false",
+        cam_height="720",
+    )
+    assert franka_cfg.hostname == "172.16.0.2"
+    assert franka_cfg.control_hz == 20.0
+    assert franka_cfg.unattended is False
+    assert franka_cfg.cam_height == 720
+
+    with pytest.raises(ValueError, match="port must be an integer"):
+        OpenpiConfig.from_kwargs(port="invalid")
+    with pytest.raises(ValueError, match="control_hz must be a float"):
+        FrankaConfig.from_kwargs(control_hz="invalid")
+    with pytest.raises(ValueError, match="unattended must be a boolean"):
+        FrankaConfig.from_kwargs(unattended="invalid")
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [

@@ -58,21 +58,53 @@ class _FromKwargs:
 
     @classmethod
     def from_kwargs(cls: type[_T], **flat: Any) -> _T:
-        """Reject unknown keys and parse configured comma-separated tuples."""
-        names = {field.name for field in dataclasses.fields(cls)}  # type: ignore[arg-type]
-        unknown = set(flat) - names
+        """Reject unknown keys and parse configured string values into expected types."""
+        fields_map = {field.name: field for field in dataclasses.fields(cls)}  # type: ignore[arg-type]
+        unknown = set(flat) - set(fields_map)
         if unknown:
             raise TypeError(f"{cls.__name__} got unexpected config keys: {sorted(unknown)}")
-        for key in cls._FLOAT_TUPLE_FIELDS & set(flat):
-            value = flat[key]
+
+        parsed: dict[str, Any] = dict(flat)
+        for key in cls._FLOAT_TUPLE_FIELDS & set(parsed):
+            value = parsed[key]
             if isinstance(value, str):
                 try:
-                    flat[key] = tuple(float(part) for part in value.split(","))
+                    parsed[key] = tuple(float(part) for part in value.split(","))
                 except ValueError:
                     raise ValueError(
                         f"{key} must be a comma-separated list of numbers, got {value!r}"
                     ) from None
-        return cls(**flat)
+
+        for field_name, field in fields_map.items():
+            if field_name not in parsed or field_name in cls._FLOAT_TUPLE_FIELDS:
+                continue
+            val = parsed[field_name]
+            if not isinstance(val, str):
+                continue
+
+            target_type = field.type
+            if target_type is int or target_type == "int":
+                try:
+                    parsed[field_name] = int(val)
+                except ValueError:
+                    raise ValueError(f"{field_name} must be an integer, got {val!r}") from None
+            elif target_type is float or target_type == "float":
+                try:
+                    parsed[field_name] = float(val)
+                except ValueError:
+                    raise ValueError(f"{field_name} must be a float, got {val!r}") from None
+            elif target_type is bool or target_type == "bool":
+                lowered = val.strip().lower()
+                if lowered in ("true", "1", "yes"):
+                    parsed[field_name] = True
+                elif lowered in ("false", "0", "no"):
+                    parsed[field_name] = False
+                else:
+                    raise ValueError(
+                        f"{field_name} must be a boolean ('true'/'false'), got {val!r}"
+                    )
+
+        return cls(**parsed)
 
 
 @dataclass(frozen=True)
